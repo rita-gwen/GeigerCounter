@@ -28,38 +28,38 @@ pwm_duty var word
 pwm_duty_new var word
 
 high_voltage_adc	var	word
-i	var	byte
-;pulse_count_int	var byte
+
 pulse_count_total	var word	;total tount of all pulses since start up
 count_buffer_total	var word	; moving sum of the ring buffer
 
-timer_count	var byte
-count_buffer var byte(BUFFER_SIZE)
-count_buffer_pointer	var byte
+timer_count	var byte				;timer post-scaler loop variable
+count_buffer var byte(BUFFER_SIZE)	;counts ring buffer
+count_buffer_pointer	var byte	;current ring buffer position
+old_count_buffer_pointer	var byte	
 
+i	var	byte
 
-pwm_duration = 2048 * 4
+;------------- Variable initialization
+pwm_duration = 2048 * 4		;1kHz base frequency
 pwm_duty = 950
 
 timer_count = TIMER_POST_SCALER
 
-;pulse_count_int = 0
+;ring buffer initialization
 count_buffer_pointer = 0
-
-for i = 0 to BUFFER_SIZE
+old_count_buffer_pointer = 0
+for i = 0 to BUFFER_SIZE-1
 	count_buffer(i) = 0
 next
+pulse_count_total = 0
+count_buffer_total = 0
 
 
-
+;-------------- Hardware configuration
+;  Start HV PWM
 hpwm PWM_OUT_PIN, pwm_duration, pwm_duty 
 
-;	enable EXT interrupt
-;INTEDG = 1                                ; Set the edge the interrupt will occur on, 1=Rising Edge and 0=Falling Edge   
-;INTE = 1                                    ; Enable the Port 0 interrupt
-PEIE = 1                                     ; Enable the peripheral interrupts
-GIE = 1                                      ; Global interrupt enable
-
+;  setup tube counter
 setTmr1	TMR1ASYNC1
 TMR1L = 0
 TMR1H = 0
@@ -70,8 +70,11 @@ TMR1ON	 = 1
 ;   Timer 0 is used to signal 5 s intervals for the ring buffer shift 
 setTmr0 TMR0INT256
 TMR0IE = 1
+PEIE = 1                                     ; Enable the peripheral interrupts
+GIE = 1                                      ; Global interrupt enable
 
-;DIR8 = PIN_DIR_OUT
+
+;---------------- Main Loop
 
 mainLoop
 
@@ -79,10 +82,12 @@ mainLoop
 	; Monitor Battery
 	; Update Display
 ;	pulse_count_int = TMR1L	;get the current count from the Timer1 register
-	
-	adin HV_ADC_IN_PIN, high_voltage_adc
-	serout s_out, i14400, ["Duty cycle:", dec pwm_duty, "  Voltage raw: ", dec high_voltage_adc, ", Pulse count: ", dec count_buffer(0), " ", dec count_buffer(1), " ", dec count_buffer(2), " ", dec count_buffer(3), " ", dec count_buffer(4), " Timer Count: ", dec timer_count, 13]
-	pause 2000
+	if count_buffer_pointer <> old_count_buffer_pointer then
+		adin HV_ADC_IN_PIN, high_voltage_adc
+		serout s_out, i14400, ["Duty cycle:", dec pwm_duty, "  Voltage raw: ", dec high_voltage_adc, ", Pulse count: ", 9, dec count_buffer(0), " ", dec count_buffer(1), " ", dec count_buffer(2), " ", dec count_buffer(3), " ", dec count_buffer(4), 9, " Buffer total ", dec count_buffer_total, " Total Count: ", dec pulse_count_total, 13]
+		old_count_buffer_pointer = count_buffer_pointer
+	endif
+	pause 1000
 		
 goto mainLoop
 
@@ -105,23 +110,42 @@ timer0Int
 	  movwf		timer_count&0x7F
 										;use indirect access to move the count value into the next element of the ring buffer
 	  bcf		STATUS, IRP				;set IRP bit
-	  movlw		count_buffer>>8
+	  movlw		(count_buffer&0x1ff)>>8
 	  btfss		STATUS, Z
 	  bsf		STATUS, IRP
 	  movlw		count_buffer&0xFF				;load buffer address
+	  
 	  banksel	count_buffer_pointer&0x1ff		;add current index value
 	  addwf		count_buffer_pointer&0x7f, w	
-	  incf		count_buffer_pointer&0x7f, f		;increment the pointer
 	  movwf		FSR								;load the address into FSR
+
+	  movf		INDF, w							;get the old value from the current buffer location
+	  banksel	count_buffer_total&0x1ff		;subtract it from the moving sum
+	  subwf		count_buffer_total&0x7f, f	
+	  btfss		STATUS, C
+	  decf		(count_buffer_total + 1)&0x7f, f	
+  
+
+readTimer:	  
+	  banksel	TMR1L							;read counter register content into W
+	  movf		TMR1L, w						;TODO: implement 16 bit counter logic. Right now we are limited to 26 pulses per second.
+	  movwf		INDF							;and put into the buffer's current location
+	  clrf		TMR1L							;reset the counter
+	  banksel	pulse_count_total&0x1ff			;add timer count to the total count. The reading is still in W
+	  addwf		pulse_count_total&0x7f, f
+	  btfsc		STATUS, C
+	  incf 		(pulse_count_total + 1)&0x7f, f
 	  
-	  banksel	TMR1L					;move counter register content into the ring buffer
-	  movf		TMR1L, w
-	  movwf		INDF					;
-	  clrf		TMR1L					;reset the counter
+	  banksel	count_buffer_total&0x1ff		;calculate buffer moving sum
+	  addwf		count_buffer_total&0x7f, f		;add current timer reading from W
+	  btfsc		STATUS, C
+	  incf		(count_buffer_total + 1)&0x7f, f	
 	  
+	  ;ring buffer management
 	  banksel	count_buffer_pointer&0x1ff		;get current index value
+	  incf		count_buffer_pointer&0x7f, f	;increment the pointer in place
 	  movf		count_buffer_pointer&0x7f, w	
-	  sublw		BUFFER_SIZE					;compare with the buffer size
+	  sublw		BUFFER_SIZE						;compare with the buffer size
 	  btfss		STATUS, Z	
 	  goto		timer0IntExit	  				;if end of buffer reached
 	  clrf		count_buffer_pointer&0x7f		;reset the index
