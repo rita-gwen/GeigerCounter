@@ -1,5 +1,5 @@
 ;------------------------------------------------
-;  	Project: Geiger counter
+;  	Project: Geiger counter11
 ;	Date: 2018-01-10
 ; 	Functionality
 ;		- count Geiger tube pulses. Calculate 60 seconds moving count of pulses with 5 seconds resolution
@@ -19,9 +19,7 @@ PIN_DIR_IN	con 1
 PIN_DIR_OUT	con	0
 
 TIMER_POST_SCALER con 150
-BUFFER_SIZE		con 5
-
-
+BUFFER_SIZE		con 12
 
 ;--------- Variable definitions
 pwm_duration var word
@@ -30,13 +28,14 @@ pwm_duty_new var word
 
 high_voltage_adc	var	word
 
-tube_count	var word	;total tount of all pulses since start up
+;-------- Counter ISR variables
+tube_count	var word				;total count of all pulses since start up
 tube_count_old var word	
 
 timer_count	var byte				;timer post-scaler loop variable
 count_buffer var word(BUFFER_SIZE)	;counts ring buffer
-count_buffer_pointer	var byte	;current ring buffer position
-old_count_buffer_pointer	var byte	;previous ring buffer position
+count_buffer_pointer	 var byte	;current ring buffer position
+old_count_buffer_pointer var byte	;previous ring buffer position
 
 i	var	byte
 
@@ -74,7 +73,7 @@ hpwm PWM_OUT_PIN, pwm_duration, pwm_duty
 setTmr1	TMR1ASYNC1
 TMR1L = 0
 TMR1H = 0
-TMR1ON	 = 1
+TMR1ON = 1
 
 
 ;	Set up Timer 0 and enable interrupt.
@@ -94,24 +93,38 @@ mainLoop
 	; Regulate HV
 	; Monitor Battery
 	; Update Display
-;	pulse_count_int = TMR1L	;get the current count from the Timer1 register
+
 	if count_buffer_pointer <> old_count_buffer_pointer then
 		adin HV_ADC_IN_PIN, high_voltage_adc
-		;TODO: need to check for 16 bit timer roll over and calculate the difference correctly in that case.
-		serout s_out, i14400, ["Duty cycle:", dec pwm_duty, "  Voltage raw: ", dec high_voltage_adc, ", Pulse count: ", 9, dec count_buffer(0), " ", dec count_buffer(1), " ", dec count_buffer(2), " ", dec count_buffer(3), " ", dec count_buffer(4), 9]
-		serout s_out, i14400, [" Buffer total ", dec (tube_count - tube_count_old), " Total Count: ", dec tube_count, " Old Count: " , dec tube_count_old, " Buffer index: ", dec count_buffer_pointer, 13]
 
-		lcd_line = "CPM:", dec (tube_count - tube_count_old), 0
+		; Correction for the 16 bit counter rolling over 0xFF
+		if tube_count < tube_count_old then
+			tube_count = tube_count - tube_count_old
+			tube_count_old = 0
+		endif 
+		
+		serout s_out, i14400, ["Duty cycle:", dec pwm_duty, "  Voltage raw: ", dec high_voltage_adc, ", Pulse count: ", 9]
+		for i = 0 to BUFFER_SIZE-1
+			serout s_out, i14400, [" ", dec count_buffer(i)]
+		next
+		serout s_out, i14400, [" Buffer increment ", dec (tube_count - tube_count_old), " Total Count: ", dec tube_count, " Old Count: " , dec tube_count_old, " Buffer index: ", dec count_buffer_pointer, 13]
+
+		;Printing the display data
+		lcd_line = rep " "\16
+		lcd_line = "CPM:", dec (tube_count - tube_count_old)
+		lcd_line(9) = 0
 		lcd_posx = 0
 		lcd_posy = 0
 		gosub lcdSendString
 		
 		lcd_line = "HV:", dec high_voltage_adc, 0
-		lcd_posx =  9
+		lcd_posx =  10
 		lcd_posy = 0
 		gosub lcdSendString
 
-		lcd_line = "COUNT:", dec tube_count, 0
+		lcd_line = rep " "\16
+		lcd_line = "COUNT:", dec tube_count
+		lcd_line(11) = 0
 		lcd_posx =  0
 		lcd_posy = 1
 		gosub lcdSendString
@@ -410,7 +423,7 @@ lcdInitGeiger						;---
 	gosub lcdSendCommand
 
 							;-- Display initialization
-	lcd_data = 0x0E			;display on, cursor on
+	lcd_data = 0x0C			;display on, cursor on
 	gosub lcdSendCommand
 	
 	lcd_data = 0x01			; clear display
