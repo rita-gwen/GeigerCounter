@@ -8,18 +8,22 @@
 ;		- display pulse count, HV and battery status on display
 
 
-pause 500
-
 ;----------- Constant definitions
 HV_ADC_IN_PIN 	con P9
 PWM_OUT_PIN		con P3
+POWER_BTN_PIN	con	P0		;B0
 
 
 PIN_DIR_IN	con 1
 PIN_DIR_OUT	con	0
 
-TIMER_POST_SCALER con 150
+TIMER_POST_SCALER con 150		;TODO
 BUFFER_SIZE		con 12
+
+INITIALIZATION_STATE		con 0
+COUNT_STATE					con	1
+BATTERY_LOW_STATE			con 2
+
 
 ;--------- Variable definitions
 pwm_duration var word
@@ -28,6 +32,8 @@ pwm_duty_new var word
 
 high_voltage_adc	var	word
 
+state_id	var byte
+shutdown_countdown	var byte
 ;-------- Counter ISR variables
 tube_count	var word				;total count of all pulses since start up
 tube_count_old var word	
@@ -38,6 +44,7 @@ count_buffer_pointer	 var byte	;current ring buffer position
 old_count_buffer_pointer var byte	;previous ring buffer position
 
 i	var	byte
+tmp	var byte
 
 ;------  LCD interface variables
 lcd_data	var byte	; data byte to send to lcd
@@ -48,53 +55,69 @@ lcd_posx	var byte	; position of the cursor on the display. x is from 0 to 15
 lcd_posy	var byte	; y is 0 or 1. The lcdSendString will put the charactes at his position
 
 ;------------- Variable initialization
-pwm_duration = 2048 * 4		;1kHz base frequency
-pwm_duty = 930
 
-timer_count = TIMER_POST_SCALER
+state_id = INITIALIZATION_STATE
+tmp = 0
 
-tube_count = 0
-tube_count_old = 0
+main_loop:
+	branch state_id, [do_initialization, do_normalCounting]			;, do_batteryLow]
 
-;ring buffer initialization
-count_buffer_pointer = 0
-old_count_buffer_pointer = 0
-for i = 0 to BUFFER_SIZE-1
-	count_buffer(i) = 0
-next
+do_initialization:			;----------------------------------------
+	tube_count = 0
+	tube_count_old = 0
+	
+	;ring buffer initialization
+	count_buffer_pointer = 0
+	old_count_buffer_pointer = 0
+	for i = 0 to BUFFER_SIZE-1
+		count_buffer(i) = 0
+	next
 
+	;-------------- Hardware configuration
+	; Init the display and show welcome message
+	gosub lcdInitGeiger
+	lcd_line = rep " "\16
+	lcd_line = "Powering up...", 0
+	lcd_posx = 0
+	lcd_posy = 0
+	gosub lcdSendString
+	lcd_line = hex tmp, 0
+	lcd_posx = 0
+	lcd_posy = 1
+	gosub lcdSendString
+	
+	setPullUps PU_Off
 
-;-------------- Hardware configuration
+	;  Start HV PWM
+	pwm_duration = 2048 * 4		;1kHz base frequency
+	pwm_duty = 930
+	hpwm PWM_OUT_PIN, pwm_duration, pwm_duty 
+	
+	;  setup tube counter
+	setTmr1	TMR1ASYNC1
+	TMR1L = 0
+	TMR1H = 0
+	TMR1ON = 1
+	
+	;	Set up Timer 0 and enable interrupt.
+	;   Timer 0 is used to signal 5 s intervals for the ring buffer shift 
+	timer_count = TIMER_POST_SCALER		; for 5 s. TODO: Calibrate this time more precisely
+	setTmr0 TMR0INT256
+	TMR0IE = 1
+	PEIE = 1                                     ; Enable the peripheral interrupts
+	GIE = 1                                      ; Global interrupt enable
+	
+	state_id = COUNT_STATE		;proceed to the counting state when initialization is complete
+	goto	main_loop
 
-;  Start HV PWM
-hpwm PWM_OUT_PIN, pwm_duration, pwm_duty 
-
-;  setup tube counter
-setTmr1	TMR1ASYNC1
-TMR1L = 0
-TMR1H = 0
-TMR1ON = 1
-
-
-;	Set up Timer 0 and enable interrupt.
-;   Timer 0 is used to signal 5 s intervals for the ring buffer shift 
-setTmr0 TMR0INT256
-TMR0IE = 1
-PEIE = 1                                     ; Enable the peripheral interrupts
-GIE = 1                                      ; Global interrupt enable
-
-gosub lcdInitGeiger
-
-
-;---------------- Main Loop
-
-mainLoop
+;----------------
+do_normalCounting:				;-------- Regular counting operation
 
 	; Regulate HV
 	; Monitor Battery
 	; Update Display
 
-	if count_buffer_pointer <> old_count_buffer_pointer then
+	if count_buffer_pointer <> old_count_buffer_pointer then		;-- New counter reading is available
 		adin HV_ADC_IN_PIN, high_voltage_adc
 
 		; Correction for the 16 bit counter rolling over 0xFF
@@ -107,7 +130,7 @@ mainLoop
 		for i = 0 to BUFFER_SIZE-1
 			serout s_out, i14400, [" ", dec count_buffer(i)]
 		next
-		serout s_out, i14400, [" Buffer increment ", dec (tube_count - tube_count_old), " Total Count: ", dec tube_count, " Old Count: " , dec tube_count_old, " Buffer index: ", dec count_buffer_pointer, 13]
+		serout s_out, i14400, [" Buffer increment ", dec (tube_count - tube_count_old), " Total Count: ", dec tube_count, " Old Count: " , dec tube_count_old, " tmp: ", hex tmp, 13]
 
 		;Printing the display data
 		lcd_line = rep " "\16
@@ -131,9 +154,8 @@ mainLoop
 		old_count_buffer_pointer = count_buffer_pointer
 	endif
 	pause 1000
-		
-goto mainLoop
-
+	goto main_loop
+	
 
 
 ;------------------------------------------------------------------------
@@ -142,6 +164,8 @@ goto mainLoop
 israsm{                                 ; Interrupt dispatcher
 	  btfsc	INTCON, TMR0IF				;go to timer interrupt if this is timer interrupt.
 	  goto	timer0Int
+	  btfsc	INTCON, INTF
+	  goto	extInt						; Power button down interrupt
 	  goto	endInterrupts
 	  
 timer0Int
@@ -251,7 +275,13 @@ timer0IntExit
 	  bcf		PORTA, 0
 	  banksel	0
 	  bcf	INTCON, TMR0IF
+	  goto		endInterrupts
+;----------------------------------------
+extInt:
       
+      nop
+      nop
+      bcf		INTCON, INTF
       
 endInterrupts      
 	  nop
