@@ -9,9 +9,15 @@
 
 
 ;----------- Constant definitions
-HV_ADC_IN_PIN 	con P9
-PWM_OUT_PIN		con P3
-POWER_BTN_PIN	con	P0		;B0
+HV_ADC_IN_PIN 	con P9		; pin 18
+PWM_OUT_PIN		con P3		; pin 9, B3
+
+CHRG_POT_INC_PIN	con	P0		; B0  battery charget current control
+CHRG_POT_UPDOWN_PIN	con P10		; pin 1, A2
+CHRG_USBPWR_IND		con P11		; pin 2, A3 active when USB power connection is made. It also connects to 
+							; FT232 RESET pin, be careful not to drive it low.
+V_REF_PIN		con P7		; pin 13, B7 voltage reference from the power step up converter
+V_BATTERY_PIN	con P8		; pin 17, A0 battery voltage measurement
 
 
 PIN_DIR_IN	con 1
@@ -24,6 +30,8 @@ INITIALIZATION_STATE		con 0
 COUNT_STATE					con	1
 BATTERY_LOW_STATE			con 2
 
+BATTERY_BIT_MASK		con 0x01	; 0 means 0; 1 means normal
+USB_BIT_MASK			con 0x02	; 0 - disconnected, 1 - connected
 
 ;--------- Variable definitions
 pwm_duration var word
@@ -31,8 +39,13 @@ pwm_duty var word
 pwm_duty_new var word
 
 high_voltage_adc	var	word
+voltage_ref_adc		var word
+voltage_battery_adc	var word
+charge_current		var sbyte		; 32 bit value indicating current source wiper position that defines the charging current
+charge_current_new	var sbyte		; input parameter to the setChrgCurr procedure
 
 state_id	var byte
+charge_state_id	var byte
 shutdown_countdown	var byte
 ;-------- Counter ISR variables
 tube_count	var word				;total count of all pulses since start up
@@ -50,13 +63,14 @@ tmp	var byte
 lcd_data	var byte	; data byte to send to lcd
 lcd_nib		var	byte	; what nib in lcd_data to send. 0 low nib, 1 high nib
 lcd_rs		var byte	; content of the RS bit (0 low, 1 high)
-lcd_line	var byte(16); a zero-terminated string to send to the dislpay
+lcd_line	var byte(17); a zero-terminated string to send to the dislpay
 lcd_posx	var byte	; position of the cursor on the display. x is from 0 to 15
 lcd_posy	var byte	; y is 0 or 1. The lcdSendString will put the charactes at his position
 
 ;------------- Variable initialization
 
 state_id = INITIALIZATION_STATE
+charge_state_id = 1
 tmp = 0
 
 main_loop:
@@ -87,7 +101,13 @@ do_initialization:			;----------------------------------------
 	gosub lcdSendString
 	
 	setPullUps PU_Off
-
+	
+	; initialize ADC pin and battery charger
+	INPUT HV_ADC_IN_PIN
+	INPUT V_REF_PIN
+	INPUT V_BATTERY_PIN 
+	INPUT CHRG_USBPWR_IND
+	
 	;  Start HV PWM
 	pwm_duration = 2048 * 4		;1kHz base frequency
 	pwm_duty = 930
@@ -107,6 +127,17 @@ do_initialization:			;----------------------------------------
 	PEIE = 1                                     ; Enable the peripheral interrupts
 	GIE = 1                                      ; Global interrupt enable
 	
+	if IN11 = 1 then					; if USB is connected initialize the battery charger
+		; set the charge pot to 0 current (max resistance)
+		HIGH CHRG_POT_INC_PIN			; -- High-to-low transitions
+		HIGH CHRG_POT_UPDOWN_PIN		; -- High to increment, low to decrement
+		for i = 1 to 32
+			LOW CHRG_POT_INC_PIN
+			HIGH CHRG_POT_INC_PIN
+		next
+		charge_current = 0	
+	endif
+	
 	state_id = COUNT_STATE		;proceed to the counting state when initialization is complete
 	goto	main_loop
 
@@ -119,23 +150,36 @@ do_normalCounting:				;-------- Regular counting operation
 
 	if count_buffer_pointer <> old_count_buffer_pointer then		;-- New counter reading is available
 		adin HV_ADC_IN_PIN, high_voltage_adc
+;		adin V_REF_PIN, voltage_ref_adc
 
 		; Correction for the 16 bit counter rolling over 0xFF
 		if tube_count < tube_count_old then
 			tube_count = tube_count - tube_count_old
 			tube_count_old = 0
 		endif 
-		
-		serout s_out, i14400, ["Duty cycle:", dec pwm_duty, "  Voltage raw: ", dec high_voltage_adc, ", Pulse count: ", 9]
-		for i = 0 to BUFFER_SIZE-1
-			serout s_out, i14400, [" ", dec count_buffer(i)]
-		next
-		serout s_out, i14400, [" Buffer increment ", dec (tube_count - tube_count_old), " Total Count: ", dec tube_count, " Old Count: " , dec tube_count_old, " tmp: ", hex tmp, 13]
+		if IN11 = 1 then		;if USB port is connected
+			serout s_out, i19200, ["{"]
+			serout s_out, i19200, [0x22, "hv_adc", 0x22, 0x3A, dec high_voltage_adc]
+			serout s_out, i19200, [0x2C, 0x22, "bat_adc", 0x22, 0x3A, dec voltage_battery_adc]
+			serout s_out, i19200, [0x2C, 0x22, "count_buffer", 0x22, 0x3A, 0x22]
+			for i = 0 to BUFFER_SIZE-1
+				serout s_out, i19200, [" ", dec count_buffer(i)]
+			next
+			serout s_out, i19200, [0x22, 0x2C, 0x22, "buffer_pointer", 0x22, 0x3A, dec count_buffer_pointer]
+			serout s_out, i19200, ["}",  10]
+			
+;			serout s_out, i14400, [" USB IND:", bin IN11, ", Pulse count: ", 9]
+;			serout s_out, i14400, [" Buffer increment ", dec (tube_count - tube_count_old), " Total Count: ", dec tube_count, " Old Count: " , dec tube_count_old, " tmp: ", hex tmp, 13]
 
+			; update the battery charging current
+			adin V_BATTERY_PIN, voltage_battery_adc
+			charge_current_new = (((930 - voltage_battery_adc)>>3)+6) max 32
+			gosub setChargeCurr
+		endif
 		;Printing the display data
 		lcd_line = rep " "\16
 		lcd_line = "CPM:", dec (tube_count - tube_count_old)
-		lcd_line(9) = 0
+		lcd_line(10) = 0
 		lcd_posx = 0
 		lcd_posy = 0
 		gosub lcdSendString
@@ -145,9 +189,15 @@ do_normalCounting:				;-------- Regular counting operation
 		lcd_posy = 0
 		gosub lcdSendString
 
-		lcd_line = rep " "\16
-		lcd_line = "COUNT:", dec tube_count
-		lcd_line(11) = 0
+		if IN11 = 1 then
+			tmp = "C"
+		else
+			tmp = " "
+		endif
+		i = ((voltage_battery_adc-670)>>1) max 99
+		lcd_line = rep" "\11, str tmp\1, "B", dec i, "%"
+		lcd_line(16) = 0
+		
 		lcd_posx =  0
 		lcd_posy = 1
 		gosub lcdSendString
@@ -155,6 +205,28 @@ do_normalCounting:				;-------- Regular counting operation
 	endif
 	pause 1000
 	goto main_loop
+	
+	
+;------------------------------------------------------------------------
+; -- Set the charging current
+setChargeCurr:
+
+	if charge_current = charge_current_new then
+		return
+	endif
+	
+	if charge_current_new > charge_current then
+		LOW CHRG_POT_UPDOWN_PIN
+	else 
+		HIGH CHRG_POT_UPDOWN_PIN
+	endif
+	for i = 1 to abs(charge_current_new - charge_current)
+		LOW CHRG_POT_INC_PIN
+		HIGH CHRG_POT_INC_PIN
+	next
+	charge_current = charge_current_new
+;	drain_state.lownib = v_chrg_curr >> 1
+return
 	
 
 
@@ -258,10 +330,10 @@ goodRead
 
 timer0IntExit	  
 	  
-	  banksel	TRISA
-	  BcF		TRISA, 0
-	  banksel	PORTA
-	  bsf		PORTA, 0
+;	  banksel	TRISA
+;	  BcF		TRISA, 0
+;	  banksel	PORTA
+;	  bsf		PORTA, 0
 	  nop
 	  nop
 	  nop
@@ -271,8 +343,8 @@ timer0IntExit
 	  nop
 	  nop
 	  nop
-	  banksel	PORTA
-	  bcf		PORTA, 0
+;	  banksel	PORTA
+;	  bcf		PORTA, 0
 	  banksel	0
 	  bcf	INTCON, TMR0IF
 	  goto		endInterrupts
@@ -421,7 +493,7 @@ lcdInitGeiger						;---
 
 	; set Display pins to output low.
 	low LCD_RS_PIN
-	low LCD_RW_PIN
+;	low LCD_RW_PIN
 	low LCD_DAT4_PIN
 	low LCD_DAT5_PIN
 	low LCD_DAT6_PIN
