@@ -110,7 +110,7 @@ do_initialization:			;----------------------------------------
 	
 	;  Start HV PWM
 	pwm_duration = 2048 * 4		;1kHz base frequency
-	pwm_duty = 930
+	pwm_duty = 960
 	hpwm PWM_OUT_PIN, pwm_duration, pwm_duty 
 	
 	;  setup tube counter
@@ -151,6 +151,7 @@ do_normalCounting:				;-------- Regular counting operation
 	if count_buffer_pointer <> old_count_buffer_pointer then		;-- New counter reading is available
 		adin HV_ADC_IN_PIN, high_voltage_adc
 ;		adin V_REF_PIN, voltage_ref_adc
+		adin V_BATTERY_PIN, voltage_battery_adc
 
 		; Correction for the 16 bit counter rolling over 0xFF
 		if tube_count < tube_count_old then
@@ -160,6 +161,7 @@ do_normalCounting:				;-------- Regular counting operation
 		if IN11 = 1 then		;if USB port is connected
 			serout s_out, i19200, ["{"]
 			serout s_out, i19200, [0x22, "hv_adc", 0x22, 0x3A, dec high_voltage_adc]
+			serout s_out, i19200, [0x22, "charge_current", 0x22, 0x3A, dec charge_current]
 			serout s_out, i19200, [0x2C, 0x22, "bat_adc", 0x22, 0x3A, dec voltage_battery_adc]
 			serout s_out, i19200, [0x2C, 0x22, "count_buffer", 0x22, 0x3A, 0x22]
 			for i = 0 to BUFFER_SIZE-1
@@ -172,8 +174,7 @@ do_normalCounting:				;-------- Regular counting operation
 ;			serout s_out, i14400, [" Buffer increment ", dec (tube_count - tube_count_old), " Total Count: ", dec tube_count, " Old Count: " , dec tube_count_old, " tmp: ", hex tmp, 13]
 
 			; update the battery charging current
-			adin V_BATTERY_PIN, voltage_battery_adc
-			charge_current_new = (((930 - voltage_battery_adc)>>3)+6) max 32
+			charge_current_new = (((950 - voltage_battery_adc)>>2)+6) max 32
 			gosub setChargeCurr
 		endif
 		;Printing the display data
