@@ -1,5 +1,5 @@
 # GeigerCounter
-Firmware and software for a portable Geiger-Mueller counter. Hardware design files are moved to CircuitMaker (https://circuitmaker.com/Projects/Details/Rita-Chupalov/Geiger).
+Firmware and software for a portable Geiger-Mueller counter. 
 
 This project represents a portable, battery powered instrument built around Basic Nano (PIC16F87) microcontroller. The device detects 
 radiation particles passing through the detector and keeps total count of them since startup and average over the 
@@ -15,4 +15,7 @@ Features to be implemented in the next version:
  * Improve display visibility in full day light: LCD display is almost invisible in full sun.
  * Add multiple modes of operation: background monitoring, sample measurement
  * add data logging abilities
+ * use more advanced CPU, one of ST32 CORTEX-M0 family most probably.
 
+Please ignore the DipTrace schematic and PCB files here, they are outdated. Hardware design files are moved to CircuitMaker (https://circuitmaker.com/Projects/Details/Rita-Chupalov/Geiger). The version of DipTrace I have has too many limitations for this 
+project.
