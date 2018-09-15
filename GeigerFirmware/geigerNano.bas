@@ -23,7 +23,7 @@ V_BATTERY_PIN	con P8		; pin 17, A0 battery voltage measurement
 PIN_DIR_IN	con 1
 PIN_DIR_OUT	con	0
 
-TIMER_POST_SCALER con 150		;TODO
+TIMER_POST_SCALER con 154		;TODO: Should be 144, 150 is a bit higher: 5.2 sec
 BUFFER_SIZE		con 12
 
 INITIALIZATION_STATE		con 0
@@ -55,6 +55,7 @@ timer_count	var byte				;timer post-scaler loop variable
 count_buffer var word(BUFFER_SIZE)	;counts ring buffer
 count_buffer_pointer	 var byte	;current ring buffer position
 old_count_buffer_pointer var byte	;previous ring buffer position
+total_time_count		var word	;count of total timer interrupts since power up.
 
 i	var	byte
 tmp	var byte
@@ -79,6 +80,7 @@ main_loop:
 do_initialization:			;----------------------------------------
 	tube_count = 0
 	tube_count_old = 0
+	total_time_count = 0
 	
 	;ring buffer initialization
 	count_buffer_pointer = 0
@@ -110,7 +112,7 @@ do_initialization:			;----------------------------------------
 	
 	;  Start HV PWM
 	pwm_duration = 2048 * 4		;1kHz base frequency
-	pwm_duty = 960
+	pwm_duty = 920
 	hpwm PWM_OUT_PIN, pwm_duration, pwm_duty 
 	
 	;  setup tube counter
@@ -161,13 +163,15 @@ do_normalCounting:				;-------- Regular counting operation
 		if IN11 = 1 then		;if USB port is connected
 			serout s_out, i19200, ["{"]
 			serout s_out, i19200, [0x22, "hv_adc", 0x22, 0x3A, dec high_voltage_adc]
-			serout s_out, i19200, [0x22, "charge_current", 0x22, 0x3A, dec charge_current]
+			serout s_out, i19200, [0x2C, 0x22, "charge_current", 0x22, 0x3A, dec charge_current]
 			serout s_out, i19200, [0x2C, 0x22, "bat_adc", 0x22, 0x3A, dec voltage_battery_adc]
+			serout s_out, i19200, [0x2C, 0x22, "cpm", 0x22, 0x3A, dec (tube_count - tube_count_old)]
 			serout s_out, i19200, [0x2C, 0x22, "count_buffer", 0x22, 0x3A, 0x22]
 			for i = 0 to BUFFER_SIZE-1
 				serout s_out, i19200, [" ", dec count_buffer(i)]
 			next
 			serout s_out, i19200, [0x22, 0x2C, 0x22, "buffer_pointer", 0x22, 0x3A, dec count_buffer_pointer]
+			serout s_out, i19200, [0x2C, 0x22, "time_count", 0x22, 0x3A, dec total_time_count]
 			serout s_out, i19200, ["}",  10]
 			
 ;			serout s_out, i14400, [" USB IND:", bin IN11, ", Pulse count: ", 9]
@@ -179,24 +183,25 @@ do_normalCounting:				;-------- Regular counting operation
 		endif
 		;Printing the display data
 		lcd_line = rep " "\16
-		lcd_line = "CPM:", dec (tube_count - tube_count_old)
+		lcd_line = "T:", dec tube_count 
 		lcd_line(10) = 0
 		lcd_posx = 0
 		lcd_posy = 0
 		gosub lcdSendString
 		
-		lcd_line = "HV:", dec high_voltage_adc, 0
-		lcd_posx =  10
+		lcd_line = "CPM:", dec (tube_count - tube_count_old)		;"HV:", dec high_voltage_adc, 0
+		lcd_posx =  9
 		lcd_posy = 0
 		gosub lcdSendString
 
+		 
 		if IN11 = 1 then
 			tmp = "C"
 		else
 			tmp = " "
 		endif
 		i = ((voltage_battery_adc-670)>>1) max 99
-		lcd_line = rep" "\11, str tmp\1, "B", dec i, "%"
+		lcd_line = dec2 (total_time_count/720)\2, ":", dec2 (total_time_count/12//60)\2, ":", dec2 (total_time_count//12*5)\2, rep" "\3, str tmp\1, "B", dec i, "%"
 		lcd_line(16) = 0
 		
 		lcd_posx =  0
@@ -318,7 +323,12 @@ badRead
 	  movwf		(tube_count)&0x7f
 	  
 goodRead
-	  
+	  banksel	total_time_count&0x1ff			;increment total time counter
+	  incf		total_time_count&0x7f, f
+	  btfsc		STATUS, Z
+	  incf		(total_time_count + 1)&0x7f, f
+
+
 	  ;ring buffer management
 	  banksel	count_buffer_pointer&0x1ff		;get current index value
 	  incf		count_buffer_pointer&0x7f, f	;increment the pointer in place
@@ -328,18 +338,8 @@ goodRead
 	  goto		timer0IntExit	  				;if end of buffer reached
 	  clrf		count_buffer_pointer&0x7f		;reset the index
 	  
-
 timer0IntExit	  
 	  
-;	  banksel	TRISA
-;	  BcF		TRISA, 0
-;	  banksel	PORTA
-;	  bsf		PORTA, 0
-	  nop
-	  nop
-	  nop
-	  nop
-	  nop
 	  nop
 	  nop
 	  nop

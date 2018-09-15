@@ -87,7 +87,7 @@ class DataPanel(wx.Panel):
         self.cpmData.append(data['cpm']) 
         self.outputText.AppendText(json.dumps(data) + '\n')
         #trim the text field content to prevent memory wasting
-        if self.outputText.GetNumberOfLines() > 10:
+        if self.outputText.GetNumberOfLines() > 1000:
             lineLen = self.outputText.GetRange(0, 500).index('}')
             self.outputText.Remove(0, lineLen + 3)
         #

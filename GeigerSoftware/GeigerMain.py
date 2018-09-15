@@ -19,7 +19,6 @@ ID_DEVICE_DISCONNECT = 14
 # package into a standalone application (with icon)
 # replace prints with proper logging
 # Add battery charging on/off control
-# do not keep the full file in memory, only CMP data for the chart
 # Add retry to the serial thread to prevent abnormal termination on single read failure
 # add ability to add comments/time marks to the data file
 #
@@ -28,6 +27,7 @@ ID_DEVICE_DISCONNECT = 14
 # Saving to a file - DONE
 # Timestamping - DONE
 # Show number of data points in the status bar - DONE
+# do not keep the full file in memory, only CMP data for the chart - DONE
 
 class AppWindow(wx.Frame):
 
