@@ -19,3 +19,5 @@ Features to be implemented in the next version:
 
 Please ignore the DipTrace schematic and PCB files here, they are outdated. Hardware design files are moved to CircuitMaker (https://circuitmaker.com/Projects/Details/Rita-Chupalov/Geiger). The version of DipTrace I have has too many limitations for this 
 project.
+
+Assembly.FCStd is a FreeCAD sketch of the device components fitting into the enclosure.
